@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>WFRP4e Character Sheet</title>
 <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
 
 <style>
 :root {
@@ -3579,36 +3580,285 @@ function newChar() {
 }
 
 // ── PDF EXPORT ────────────────────────────────────────
-async function exportPDF() {
-  if (!IS_LOCAL) {
-    alert('PDF export is only available in the desktop app.\n\nDownload the desktop version to generate filled PDF character sheets.');
-    return;
+// ── CLIENT-SIDE PDF EXPORT (works on web via pdf-lib) ────────────────────────
+
+function _wrapToLines(text, width) {
+  if (!text) return [''];
+  const words = String(text).split(/\s+/);
+  const lines = []; let line = [], cur = 0;
+  for (const w of words) {
+    const needed = w.length + (line.length ? 1 : 0);
+    if (cur + needed > width && line.length) {
+      lines.push(line.join(' ')); line = [w]; cur = w.length;
+    } else { line.push(w); cur += needed; }
   }
+  if (line.length) lines.push(line.join(' '));
+  return lines.length ? lines : [''];
+}
+
+function _resolveWeaponDamage(dmgStr, strength) {
+  if (!dmgStr || !/SB/i.test(dmgStr)) return dmgStr;
+  try {
+    const sb = Math.floor(parseInt(strength) / 10);
+    const expr = dmgStr.replace(/\bSB\b/gi, String(sb));
+    if (/^[+\-\d]+$/.test(expr)) {
+      const r = Function('"use strict"; return (' + expr + ')')();
+      return r >= 0 ? '+' + r : String(r);
+    }
+  } catch(e) {}
+  return dmgStr;
+}
+
+function _abbrGroup(g) {
+  const m = String(g || '').trim().match(/^(?:Melee|Ranged)\s*\((.+)\)$/i);
+  return m ? m[1] : String(g || '').trim();
+}
+
+function _buildFieldValues(d) {
+  const fv = {};
+  const set = (name, val) => { fv[name] = val != null ? String(val) : ''; };
+
+  // Identity
+  set('Name', d.name); set('Species', d.species); set('Class', d.cls);
+  set('Career', d.career); set('Career Level', d.careerLevel);
+  set('Career Path', d.careerPath); set('Status', d.status);
+  set('Age', d.age); set('Height', d.height); set('Hair', d.hair); set('Eyes', d.eyes);
+
+  // Characteristics
+  const chars = d.chars || {};
+  const charMap = {
+    ws: ['WSInitial','WSAdvances','WSCurrent'], bs: ['BSInitial','BSAdvances','BSCurrent'],
+    s:  ['SInitial', 'SAdvances', 'SCurrent'],  t:  ['TInitial', 'TAdvances', 'TCurrent'],
+    i:  ['IInitial', 'IAdvances', 'ICurrent'],  ag: ['AgInitial','AgAdvances','AgCurrent'],
+    dex:['DexInitial','DexAdvances','DexCurrent'], int:['IntInitial','IntAdvances','IntCurrent'],
+    wp: ['WPInitial', 'WPAdvances', 'WPCurrent'],  fel:['FelInitial','FelAdvances','FelCurrent'],
+  };
+  for (const [key, [fi, fa, fc]] of Object.entries(charMap)) {
+    const c = chars[key] || {};
+    set(fi, c.i || '0'); set(fa, c.a || '0'); set(fc, c.cur || '0');
+  }
+
+  // Fate / Resilience / XP / Movement
+  set('Fate', d.fate || '0'); set('Fortune', d.fortune || '0');
+  set('ResilienceRow1', d.res || '0'); set('ResolveRow1', d.resolve || '0');
+  set('MotivationRow1', d.motivation || '');
+  set('CurrentRow1', d.xpC || '0'); set('SpentRow1', d.xpS || '0'); set('TotalRow1', d.xpT || '0');
+  set('Movement', d.move || '0'); set('Walk', d.walk || '0'); set('Run', d.run || '0');
+
+  // Char helpers
+  const CHAR_KEY = {WS:'ws',BS:'bs',S:'s',T:'t',I:'i',Ag:'ag',Dex:'dex',Int:'int',WP:'wp',Fel:'fel'};
+  const CHAR_ABBR = Object.fromEntries(Object.entries(CHAR_KEY).map(([k,v])=>[v,k]));
+  const charCurrent = abbr => {
+    const key = CHAR_KEY[abbr] || abbr.toLowerCase();
+    const c = chars[key] || {};
+    try { return String(parseInt(c.i||0) + parseInt(c.a||0)); } catch(e) { return ''; }
+  };
+  const charDisplay = abbr => abbr ? (CHAR_ABBR[abbr.toLowerCase()] || abbr) : '';
+
+  // Basic Skills
+  const SKILL_FIELD_MAP = [
+    ['Dex','AdvDex','SkillDex'],['Ag','AdvAg','SkillAg'],['Fel_3','AdvFel_3','SkillFel_3'],
+    ['Fel_4','AdvFel_4','SkillFel_4'],['WP','AdvWP','SkillWP'],['S_2','AdvS_2','SkillS_2'],
+    ['WP_2','AdvWP_2','SkillWP_2'],['T','AdvT','SkillT'],['Ag_2','AdvAg_2','SkillAg_2'],
+    ['Ag_3','AdvAg_3','SkillAg_3'],['T_2','AdvT_2','SkillT_2'],['Fel_6','AdvFel_6','SkillFel_6'],
+    ['Int_2','AdvInt_2','SkillInt_2'],['Fel','AdvFel','SkillFel'],['Fel_2','AdvFel_2','SkillFel_2'],
+    ['S','AdvS','SkillS'],['I','AdvI','SkillI'],['Fel_5','AdvFel_5','SkillFel_5'],
+    ['WS','AdvWS','SkillWS'],['WS_2','AdvWS_2','SkillWS_2'],['I_2','AdvI_2','SkillI_2'],
+    ['Int','AdvInt','SkillInt'],['I_3','AdvI_3','SkillI_3'],['Ag_4','AdvAg_4','SkillAg_4'],
+    ['S_3','AdvS_3','SkillS_3'],['Ag_5','AdvAg_5','SkillAg_5'],
+  ];
+  const basic = d.basicSkills || [];
+  SKILL_FIELD_MAP.forEach(([cf, af, sf], i) => {
+    const sk = basic[i] || {};
+    set(cf, charCurrent(sk.char || '')); set(af, sk.adv || '0'); set(sf, sk.total || '0');
+  });
+
+  // Advanced Skills
+  const adv = (d.advSkills || []).filter(s => (s.name||'').trim());
+  const aN=[], aC=[], aC2=[], aA=[], aS=[];
+  for (const s of adv) {
+    const wrap = _wrapToLines(s.name||'', 17); const rows = wrap.length;
+    const abbr = s.char||'';
+    aN.push(...wrap);
+    aC.push(charDisplay(abbr), ...Array(rows-1).fill(''));
+    aC2.push(charCurrent(abbr), ...Array(rows-1).fill(''));
+    aA.push(s.adv||'0', ...Array(rows-1).fill(''));
+    aS.push(s.total||'0', ...Array(rows-1).fill(''));
+  }
+  set('NameRow1', aN.join('\n')); set('CharacteristicRow1', aC.join('\n'));
+  set('CharacteristicRow1_2', aC2.join('\n')); set('AdvRow1', aA.join('\n')); set('SkillRow1', aS.join('\n'));
+
+  // Talents
+  const talents = (d.talents||[]).filter(t=>(t.name||'').trim());
+  const tN=[], tT=[], tD=[];
+  for (const t of talents) {
+    const nw = _wrapToLines(t.name||'', 14); const dw = _wrapToLines(t.desc||'', 24);
+    const rows = Math.max(nw.length, dw.length);
+    tN.push(...nw, ...Array(rows-nw.length).fill(''));
+    tT.push(t.times||'', ...Array(rows-1).fill(''));
+    tD.push(...dw, ...Array(rows-dw.length).fill(''));
+  }
+  set('Talent NameRow1', tN.join('\n')); set('Times takenRow1', tT.join('\n')); set('DescriptionRow1', tD.join('\n'));
+
+  // Ambitions / Party
+  set('Ambitions-short', d.ambS||''); set('Ambitions-long', d.ambL||'');
+  set('party-ambitions-short', d.partyS||''); set('Party-ambitions-long', d.partyL||'');
+  set('Party-members', d.partyM||'');
+
+  // Armour rows (page 2)
+  const ARM = [
+    ['NameRow1_2','LocationsRow1','EncRow1','APRow1','QualitiesRow1'],
+    ['NameRow2','LocationsRow2','EncRow2','APRow2','QualitiesRow2'],
+    ['NameRow3','LocationsRow3','EncRow3','APRow3','QualitiesRow3'],
+    ['NameRow4','LocationsRow4','EncRow4','APRow4','QualitiesRow4'],
+    ['NameRow5','LocationsRow5','EncRow5','APRow5','QualitiesRow5'],
+  ];
+  const armour = (d.armour||[]).filter(a=>(a.name||'').trim());
+  let ri = 0;
+  for (const piece of armour) {
+    if (ri >= ARM.length) break;
+    const qlines = _wrapToLines(piece.qualities||'', 26);
+    const [nf,lf,ef,af,qf] = ARM[ri++];
+    set(nf,piece.name||''); set(lf,piece.loc||''); set(ef,piece.enc||''); set(af,piece.ap||''); set(qf,qlines[0]);
+    for (const extra of qlines.slice(1)) {
+      if (ri >= ARM.length) break;
+      const [nf2,lf2,ef2,af2,qf2] = ARM[ri++];
+      set(nf2,''); set(lf2,''); set(ef2,''); set(af2,''); set(qf2,extra);
+    }
+  }
+  for (const [nf,lf,ef,af,qf] of ARM.slice(ri)) { set(nf,'');set(lf,'');set(ef,'');set(af,'');set(qf,''); }
+
+  // AP hit location boxes
+  set('0109',d.apHead||'0'); set('1024',d.apRarm||'0'); set('2544',d.apLarm||'0');
+  set('4579',d.apBody||'0'); set('9000',d.apRleg||'0'); set('8089',d.apLleg||'0'); set('Shield',d.apShield||'0');
+
+  // Trappings
+  const traps = (d.trappings||[]).filter(r=>(r.name||'').trim());
+  const trapNames = traps.map(r => r.stowed ? '🛒 '+r.name : r.packed ? '🐴 '+r.name : r.name).join('\n');
+  const trapEncs  = traps.map(r => (r.packed||r.stowed) ? '' : (r.enc||'')).join('\n');
+  set('NameRow1_3', trapNames); set('EncRow1_2', trapEncs);
+
+  // Psychology / Corruption
+  set('PSYCHOLOGY 1', d.psych||''); set('PSYCHOLOGY 2',''); set('PSYCHOLOGY 3','');
+  set('CorruptionMutation', d.corrupt||'');
+
+  // Wealth
+  set('GC', d.gc||'0'); set('SS', d.ss||'0'); set('WEALTH', d.d||'0');
+
+  // Encumbrance
+  const fmtEnc = v => { try { const f=parseFloat(v); return f===Math.floor(f)?String(Math.floor(f)):f.toFixed(1); } catch(e){return String(v);} };
+  const encT = traps.filter(r=>!r.packed&&!r.stowed).reduce((s,r)=>s+parseFloat(r.enc||0),0);
+  let encTot = '0';
+  try { encTot = fmtEnc(parseFloat(d.encW||0)+parseFloat(d.encA||0)+encT); } catch(e) { encTot = d.encTotal||'0'; }
+  set('ENCUMBRANCE',d.encW||'0'); set('Armour',d.encA||'0'); set('Trappings',fmtEnc(encT));
+  set('Max Enc',d.encMax||'0'); set('Total',encTot);
+
+  // Wounds
+  set('WOUNDS',d.wSb||'0'); set('TB2',d.wTb2||'0'); set('WPB',d.wWpb||'0');
+  set('Hardy',d.wHardy||'0'); set('Wounds',d.wMax||'0');
+
+  // Weapons
+  const WPN = [
+    ['NameRow1_4','GroupRow1','EncRow1_3','RangeReachRow1','DamageRow1','QualitiesRow1_2'],
+    ['NameRow2_2','GroupRow2','EncRow2_2','RangeReachRow2','DamageRow2','QualitiesRow2_2'],
+    ['NameRow3_2','GroupRow3','EncRow3_2','RangeReachRow3','DamageRow3','QualitiesRow3_2'],
+    ['NameRow4_2','GroupRow4','EncRow4_2','RangeReachRow4','DamageRow4','QualitiesRow4_2'],
+    ['NameRow5_2','GroupRow5','EncRow5_2','RangeReachRow5','DamageRow5','QualitiesRow5_2'],
+    ['NameRow6','GroupRow6','EncRow6','RangeReachRow6','DamageRow6','QualitiesRow6'],
+    ['NameRow7','GroupRow7','EncRow7','RangeReachRow7','DamageRow7','QualitiesRow7'],
+  ];
+  const sChar = chars.s||{}; let strCur = 0;
+  try { strCur = parseInt(sChar.i||0)+parseInt(sChar.a||0); } catch(e){}
+  (d.weapons||[]).forEach((row,i)=>{
+    if (i >= WPN.length) return;
+    const [nf,gf,ef,rf,df,qf] = WPN[i];
+    set(nf,row.name||''); set(gf,_abbrGroup(row.group||'')); set(ef,row.enc||'');
+    set(rf,row.range||''); set(df,_resolveWeaponDamage(row.damage||'',strCur)); set(qf,row.qualities||'');
+  });
+  for (let i=(d.weapons||[]).length;i<WPN.length;i++){
+    const [nf,gf,ef,rf,df,qf]=WPN[i]; set(nf,'');set(gf,'');set(ef,'');set(rf,'');set(df,'');set(qf,'');
+  }
+
+  // Spells & Prayers
+  const SP = [
+    ['NameRow1_5','TNRow1','RangeRow1','TargetRow1','DurationRow1','EffectRow1'],
+    ['NameRow2_3','TNRow2','RangeRow2','TargetRow2','DurationRow2','EffectRow2'],
+    ['NameRow3_3','TNRow3','RangeRow3','TargetRow3','DurationRow3','EffectRow3'],
+    ['NameRow4_3','TNRow4','RangeRow4','TargetRow4','DurationRow4','EffectRow4'],
+    ['NameRow5_3','TNRow5','RangeRow5','TargetRow5','DurationRow5','EffectRow5'],
+    ['NameRow6_2','TNRow6','RangeRow6','TargetRow6','DurationRow6','EffectRow6'],
+    ['NameRow7_2','TNRow7','RangeRow7','TargetRow7','DurationRow7','EffectRow7'],
+    ['NameRow8','TNRow8','RangeRow8','TargetRow8','DurationRow8','EffectRow8'],
+  ];
+  const spells = (d.spells||[]).filter(s=>(s.name||'').trim());
+  ri = 0;
+  for (const spell of spells) {
+    if (ri >= SP.length) break;
+    const elines = _wrapToLines(spell.effect||'', 44);
+    const [nf,tnf,rf,tgf,df,ef] = SP[ri++];
+    set(nf,spell.name||''); set(tnf,spell.tn||''); set(rf,spell.range||'');
+    set(tgf,spell.target||''); set(df,spell.duration||''); set(ef,elines[0]);
+    for (const extra of elines.slice(1)) {
+      if (ri >= SP.length) break;
+      const [nf2,tnf2,rf2,tgf2,df2,ef2] = SP[ri++];
+      set(nf2,'');set(tnf2,'');set(rf2,'');set(tgf2,'');set(df2,'');set(ef2,extra);
+    }
+  }
+  for (const [nf,tnf,rf,tgf,df,ef] of SP.slice(ri)){set(nf,'');set(tnf,'');set(rf,'');set(tgf,'');set(df,'');set(ef,'');}
+
+  set('Sin', d.sin||'0');
+
+  return fv;
+}
+
+async function exportPDF() {
   const d = gatherData();
   const btn = document.querySelector('.btn-export');
   const orig = btn.textContent;
   btn.textContent = '⏳ Generating…';
   btn.disabled = true;
   try {
-    const resp = await fetch('http://localhost:5000/export', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(d),
-    });
-    if (!resp.ok) {
-      const err = await resp.text();
-      alert('Export failed:\n' + err);
-      return;
+    if (IS_LOCAL) {
+      // Desktop: use the Python server
+      const resp = await fetch('http://localhost:5000/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(d),
+      });
+      if (!resp.ok) { alert('Export failed:\n' + await resp.text()); return; }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = (d.name || 'character').replace(/\s+/g,'_') + '_WFRP4.pdf';
+      a.click();
+      URL.revokeObjectURL(url);
+    } else {
+      // Web: fill the PDF client-side using pdf-lib
+      const { PDFDocument } = PDFLib;
+      const templateUrl = new URL('WFRP4_Fillable_Character_Sheet_Autofill.pdf', window.location.href).href;
+      const pdfBytes = await fetch(templateUrl).then(r => r.arrayBuffer());
+      const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
+      const form = pdfDoc.getForm();
+      const fieldValues = _buildFieldValues(d);
+      for (const [name, value] of Object.entries(fieldValues)) {
+        try {
+          const field = form.getTextField(name);
+          field.setText(value);
+        } catch(e) { /* field may not exist on this template — skip */ }
+      }
+      form.flatten();
+      const filledBytes = await pdfDoc.save();
+      const blob = new Blob([filledBytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = (d.name || 'character').replace(/\s+/g,'_') + '_WFRP4.pdf';
+      a.click();
+      URL.revokeObjectURL(url);
     }
-    const blob = await resp.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = (d.name || 'character').replace(/\s+/g,'_') + '_WFRP4.pdf';
-    a.click();
-    URL.revokeObjectURL(url);
   } catch(e) {
-    alert('Could not reach the local server.\n\nMake sure wfrp_server.py is running:\n  python wfrp_server.py\n\nThen open http://localhost:5000 in your browser.');
+    alert('PDF export failed:\n' + e.message);
   } finally {
     btn.textContent = orig;
     btn.disabled = false;
