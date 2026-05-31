@@ -3781,7 +3781,9 @@ function _makePdfPage(pdfDoc) {
 
 async function _buildMountPage(pdfDoc, mountData, allTrappings) {
   if (!mountData) return;
-  const has = mountData.type||mountData.customName||mountData.equipment||mountData.traits||mountData.notes;
+  const has = mountData.type || mountData.customName ||
+              (mountData.equipment||[]).some(e=>(e.name||'').trim()) ||
+              mountData.traits || mountData.notes;
   if (!has) return;
 
   const { page, c, LM, RM, CW, BAR_H, LBL_H, BOX_H, GAP, ROW_H, FIELD_TOTAL,
@@ -3906,7 +3908,8 @@ async function _buildMountPage(pdfDoc, mountData, allTrappings) {
 // ── Vehicle page ──────────────────────────────────────────────────────────────
 async function _buildVehiclePage(pdfDoc, vehicleData, allTrappings) {
   if (!vehicleData) return;
-  const has = vehicleData.type||vehicleData.customName||vehicleData.cargo||vehicleData.notes;
+  const has = vehicleData.type || vehicleData.customName ||
+              (vehicleData.cargo||[]).some(c=>(c.name||'').trim()) || vehicleData.notes;
   if (!has) return;
 
   const { page, c, LM, RM, CW, BAR_H, LBL_H, BOX_H, GAP, ROW_H, FIELD_TOTAL,
