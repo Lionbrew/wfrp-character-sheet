@@ -3903,6 +3903,483 @@ async function _buildMountPage(pdfDoc, mountData, allTrappings) {
   }
 }
 
+// ── Vehicle page ──────────────────────────────────────────────────────────────
+async function _buildVehiclePage(pdfDoc, vehicleData, allTrappings) {
+  if (!vehicleData) return;
+  const has = vehicleData.type||vehicleData.customName||vehicleData.cargo||vehicleData.notes;
+  if (!has) return;
+
+  const { page, c, LM, RM, CW, BAR_H, LBL_H, BOX_H, GAP, ROW_H, FIELD_TOTAL,
+          hline, sectionBar, labeledField } = _makePdfPage(pdfDoc);
+
+  const stowedNames = new Set(vehicleData.stowedTrapNames||[]);
+  const stowed = (allTrappings||[]).filter(t => stowedNames.has((t.name||'').trim()) && (t.name||'').trim());
+  const extraCargo = (vehicleData.cargo||[]).filter(c=>(c.name||'').trim());
+  const vesselUpgrades = (vehicleData.vesselUpgrades||[]).filter(u=>u.key);
+  const vesselWeapons  = (vehicleData.vesselWeapons||[]).filter(w=>w.key);
+
+  const VESSEL_UPG_NAMES = {
+    armour_bronze:'Armour Plating (Bronze)',armour_iron:'Armour Plating (Iron)',
+    racing_hull:'Racing Hull',smoothing:'Smoothing',broad_rudder:'Broad Rudder',
+    fore_aft_rudder:'Fore-and-Aft Rudder',water_brakes:'Water Brakes',
+    armoured_walls:'Armoured Walls',gun_ports_small:'Gun Ports (Small)',
+    gun_ports_large:'Gun Ports (Large)',luxury_cabins:'Luxury Cabins',
+    raised_gunwales:'Raised Gunwales',stripped:'Stripped',flying_jib:'Flying Jib',
+    racing_rig:'Racing Rig',closed_rowlocks:'Closed Rowlocks',spoons:'Spoons',
+    steam_engine:'Steam Engine',magical:'Magical Propulsion',musket_rest:'Musket Rest',ram:'Ram',
+  };
+  const VESSEL_WPN_NAMES = {
+    ballista_small:'Ballista (Small)',ballista_medium:'Ballista (Medium)',
+    cannon_medium:'Cannon (Medium)',catapult_small:'Catapult (Small)',
+    catapult_medium:'Catapult (Medium)',catapult_large:'Catapult (Large)',
+    mortar:'Mortar',swivel_gun:'Swivel Gun',
+  };
+  const VESSEL_WPN_STATS = {
+    ballista_small:['100','×12'],ballista_medium:['50','×10'],cannon_medium:['75','×10'],
+    catapult_small:['50','×10'],catapult_medium:['75','×12'],catapult_large:['100','×14'],
+    mortar:['100','+10'],swivel_gun:['50','+9'],
+  };
+
+  const g = v => { const n=parseFloat(v); return isNaN(n)?String(v||''):(n===Math.floor(n)?String(Math.floor(n)):n.toFixed(1)); };
+  const encEmpty    = parseFloat(vehicleData.encEmpty||0);
+  const encUpgrades = [...vesselUpgrades,...vesselWeapons].reduce((s,u)=>s+parseFloat(u.enc||0),0);
+  const encStowed   = stowed.reduce((s,t)=>s+parseFloat(t.enc||0),0);
+  const encCargo    = extraCargo.reduce((s,ci)=>s+parseFloat(ci.enc||0),0);
+  const encTotal    = encEmpty+encUpgrades+encStowed+encCargo;
+  const capacity    = parseFloat(vehicleData.capacity||0);
+  const capRemain   = capacity-(encStowed+encCargo);
+
+  let cy = 716;
+
+  // Title
+  const vLabel = (vehicleData.customName&&vehicleData.type)
+    ? `${vehicleData.customName} (${vehicleData.type})`
+    : (vehicleData.customName||vehicleData.type||'Vehicle');
+  page.drawText(vLabel, { x:LM+(CW-vLabel.length*8)/2, y:cy-22, size:22, color:c.ink }); cy-=32;
+  hline(cy,LM,RM,1.4); cy-=12;
+
+  // Statistics
+  cy=sectionBar(cy,'Statistics'); cy-=GAP;
+  const fw2=CW/2-6;
+  labeledField('Type', vehicleData.type||'', LM, cy, fw2);
+  labeledField('Motive Power', vehicleData.motivepower||'', LM+CW/2+6, cy, fw2);
+  cy-=FIELD_TOTAL+GAP;
+  labeledField('Toughness', String(vehicleData.toughness||''), LM, cy, fw2);
+  labeledField('Wounds', String(vehicleData.wounds||''), LM+CW/2+6, cy, fw2);
+  cy-=FIELD_TOTAL+GAP;
+  if (vehicleData.move||vehicleData.length) {
+    labeledField('Move', String(vehicleData.move||''), LM, cy, fw2);
+    labeledField('Length (ft)', String(vehicleData.length||''), LM+CW/2+6, cy, fw2);
+    cy-=FIELD_TOTAL+GAP;
+  }
+  if (vehicleData.passengers) {
+    labeledField('Passengers', String(vehicleData.passengers), LM, cy, fw2);
+    cy-=FIELD_TOTAL+GAP;
+  }
+
+  // Draught Animals
+  const draughtNames = vehicleData.draughtMountNames||[];
+  if (draughtNames.length) {
+    cy=sectionBar(cy,'Draught Animals'); cy-=GAP;
+    for (const dn of draughtNames) {
+      cy-=12;
+      page.drawText('• '+dn, { x:LM+8, y:cy, size:9, color:c.ink });
+    }
+    cy-=GAP;
+  }
+
+  // Vessel Modifications
+  if (vesselUpgrades.length||vesselWeapons.length) {
+    cy=sectionBar(cy,'Vessel Modifications'); cy-=GAP;
+    const colName=CW-120, colEnc=50, colCost=68;
+    // sub-header
+    page.drawRectangle({x:LM,y:cy-13,width:colName,height:13,color:c.subBg});
+    page.drawRectangle({x:LM+colName+2,y:cy-13,width:colEnc,height:13,color:c.subBg});
+    page.drawRectangle({x:LM+colName+colEnc+4,y:cy-13,width:colCost,height:13,color:c.subBg});
+    page.drawText('MODIFICATION',{x:LM+4,y:cy-10,size:8,color:c.hdrFg});
+    page.drawText('ENC',{x:LM+colName+2+colEnc/2-8,y:cy-10,size:8,color:c.hdrFg});
+    page.drawText('COST (GC)',{x:LM+colName+colEnc+4+colCost/2-18,y:cy-10,size:8,color:c.hdrFg});
+    cy-=13;
+    for (const u of vesselUpgrades) {
+      let name=VESSEL_UPG_NAMES[u.key]||(u.key.replace(/_/g,' ').replace(/\b\w/g,l=>l.toUpperCase()));
+      const qty=parseInt(u.qty||1); if(qty>1) name+=` ×${qty}`;
+      page.drawRectangle({x:LM,y:cy-ROW_H,width:colName,height:ROW_H,color:c.fieldBg,borderColor:c.border,borderWidth:0.35});
+      page.drawRectangle({x:LM+colName+2,y:cy-ROW_H,width:colEnc,height:ROW_H,color:c.fieldBg,borderColor:c.border,borderWidth:0.35});
+      page.drawRectangle({x:LM+colName+colEnc+4,y:cy-ROW_H,width:colCost,height:ROW_H,color:c.fieldBg,borderColor:c.border,borderWidth:0.35});
+      page.drawText(name,{x:LM+6,y:cy-ROW_H+4.5,size:9,color:c.ink});
+      if(u.enc!=null&&u.enc!=='') page.drawText(String(u.enc),{x:LM+colName+2+colEnc/2-6,y:cy-ROW_H+4.5,size:9,color:c.ink});
+      cy-=ROW_H;
+    }
+    if (vesselWeapons.length) {
+      const cNm=CW-34-34-40-50-24-10, cRng=34,cDmg=34,cE2=40,cC2=50,cCon=24;
+      cy-=4;
+      const cols=[['WEAPON',cNm],['RNG',cRng],['DMG',cDmg],['ENC',cE2],['COST',cC2],['CON.',cCon]];
+      let x0=LM;
+      for(const [lbl,w2] of cols){
+        page.drawRectangle({x:x0,y:cy-13,width:w2,height:13,color:c.subBg});
+        page.drawText(lbl,{x:x0+w2/2-lbl.length*2.5,y:cy-10,size:8,color:c.hdrFg});
+        x0+=w2+2;
+      }
+      cy-=13;
+      for(const w of vesselWeapons){
+        const key=w.key;
+        let name=VESSEL_WPN_NAMES[key]||(key.replace(/_/g,' ').replace(/\b\w/g,l=>l.toUpperCase()));
+        if(w.concealed) name+=' (con.)';
+        const [rng,dmg]=VESSEL_WPN_STATS[key]||['',''];
+        const con=w.concealed?'✓':'';
+        x0=LM;
+        const vals=[[name,cNm],[rng,cRng],[dmg,cDmg],[String(w.enc!=null&&w.enc!==''?w.enc:''),cE2],['',cC2],[con,cCon]];
+        for(const [val,w2] of vals){
+          page.drawRectangle({x:x0,y:cy-ROW_H,width:w2,height:ROW_H,color:c.fieldBg,borderColor:c.border,borderWidth:0.35});
+          if(val) page.drawText(val,{x:x0+w2/2-val.length*2.5,y:cy-ROW_H+4.5,size:9,color:c.ink});
+          x0+=w2+2;
+        }
+        cy-=ROW_H;
+      }
+    }
+    cy-=GAP;
+  }
+
+  // Stowed Items
+  if (stowed.length) {
+    cy=sectionBar(cy,'Stowed Items (Player Trappings)'); cy-=GAP;
+    const nameW=CW-68;
+    page.drawRectangle({x:LM,y:cy-13,width:nameW,height:13,color:c.subBg});
+    page.drawRectangle({x:LM+nameW+4,y:cy-13,width:64,height:13,color:c.subBg});
+    page.drawText('ITEM',{x:LM+4,y:cy-10,size:8,color:c.hdrFg});
+    page.drawText('ENC',{x:LM+nameW+4+16,y:cy-10,size:8,color:c.hdrFg}); cy-=13;
+    for(const t of stowed){
+      page.drawRectangle({x:LM,y:cy-ROW_H,width:nameW,height:ROW_H,color:c.fieldBg,borderColor:c.border,borderWidth:0.35});
+      page.drawRectangle({x:LM+nameW+4,y:cy-ROW_H,width:64,height:ROW_H,color:c.fieldBg,borderColor:c.border,borderWidth:0.35});
+      page.drawCircle({x:LM+7,y:cy-ROW_H/2,size:3,color:c.gold});
+      page.drawText(t.name||'',{x:LM+14,y:cy-ROW_H+4.5,size:9,color:c.ink});
+      if(t.enc!=null&&t.enc!=='') page.drawText(String(t.enc),{x:LM+nameW+4+16,y:cy-ROW_H+4.5,size:9,color:c.ink});
+      cy-=ROW_H;
+    }
+    cy-=GAP;
+  }
+
+  // Additional Cargo
+  if (extraCargo.length) {
+    cy=sectionBar(cy,'Additional Cargo'); cy-=GAP;
+    const nameW=CW-68;
+    page.drawRectangle({x:LM,y:cy-13,width:nameW,height:13,color:c.subBg});
+    page.drawRectangle({x:LM+nameW+4,y:cy-13,width:64,height:13,color:c.subBg});
+    page.drawText('ITEM',{x:LM+4,y:cy-10,size:8,color:c.hdrFg});
+    page.drawText('ENC',{x:LM+nameW+4+16,y:cy-10,size:8,color:c.hdrFg}); cy-=13;
+    for(const item of extraCargo){
+      page.drawRectangle({x:LM,y:cy-ROW_H,width:nameW,height:ROW_H,color:c.fieldBg,borderColor:c.border,borderWidth:0.35});
+      page.drawRectangle({x:LM+nameW+4,y:cy-ROW_H,width:64,height:ROW_H,color:c.fieldBg,borderColor:c.border,borderWidth:0.35});
+      page.drawText(item.name||'',{x:LM+8,y:cy-ROW_H+4.5,size:9,color:c.ink});
+      if(item.enc!=null&&item.enc!=='') page.drawText(String(item.enc),{x:LM+nameW+4+16,y:cy-ROW_H+4.5,size:9,color:c.ink});
+      cy-=ROW_H;
+    }
+    cy-=GAP;
+  }
+
+  // Encumbrance
+  cy=sectionBar(cy,'Encumbrance'); cy-=GAP;
+  labeledField('Empty Vehicle Enc.', g(encEmpty), LM, cy, fw2);
+  labeledField('Cargo Capacity', g(capacity), LM+CW/2+6, cy, fw2); cy-=FIELD_TOTAL+GAP;
+  labeledField('Modifications Enc.', g(encUpgrades), LM, cy, fw2);
+  labeledField('Stowed Items Enc.', g(encStowed), LM+CW/2+6, cy, fw2); cy-=FIELD_TOTAL+GAP;
+  labeledField('Additional Cargo Enc.', g(encCargo), LM, cy, fw2);
+  labeledField('Remaining Capacity', g(capRemain), LM+CW/2+6, cy, fw2); cy-=FIELD_TOTAL+GAP;
+  labeledField('Total Enc.', g(encTotal), LM, cy, fw2); cy-=FIELD_TOTAL+GAP;
+
+  // Notes
+  if (vehicleData.notes) {
+    cy=sectionBar(cy,'Notes'); cy-=5;
+    const notesH=Math.max(50,cy-46);
+    page.drawRectangle({x:LM,y:cy-notesH,width:CW,height:notesH,color:c.fieldBg,borderColor:c.border,borderWidth:0.4});
+    const nlines=_wrapToLines(vehicleData.notes,80); let ny=cy-13;
+    for(const nl of nlines){
+      if(ny<cy-notesH+4) break;
+      page.drawText(nl,{x:LM+5,y:ny,size:9.5,color:c.ink}); ny-=13;
+    }
+  }
+}
+
+// ── Companion page (multi-page capable) ──────────────────────────────────────
+const TRAIT_DESC = {
+  'Amphibious':'Can breathe and move underwater without penalty.',
+  'Bestial':'Cannot speak; no social skills except Intimidate; uses WP instead of resolve for fear tests.',
+  'Camouflage':'Natural colouration; may hide in {x} environments without penalty.',
+  'Corruption':'Presence causes Corruption ({x}) tests for nearby creatures.',
+  'Dark Vision':'Can see normally in total darkness.',
+  'Disease':'Wounds may transmit {x}; target must pass End. test or contract disease.',
+  'Disturbing':'Causes Psychology test at difficulty {x} for those who witness it.',
+  'Fear':'Causes Fear ({x}); opponents must pass a WP test or become Frightened.',
+  'Frenzy':'May enter Frenzy voluntarily; while Frenzied gains +10 WS, +10 S, ignores first Critical.',
+  'Fly':'Airborne Move = {x}; ignores ground terrain and obstacles.',
+  'Hardy':'Add TB to Wounds total once (already applied to Wounds stat).',
+  'Hungry':'Must eat after each encounter or gain a level of Fatigue.',
+  'Immunity':'Immune to {x}; automatically pass all relevant tests.',
+  'Infected':'Attacks may inflict Festering Wounds; target risks infection.',
+  'Insubstantial':'Cannot be harmed by non-magical weapons or abilities.',
+  'Keen Senses':'Perception tests using {x}: +10 bonus; not affected by blindness for that sense.',
+  'Lifesense':'Detects living creatures within WP yards regardless of lighting or concealment.',
+  'Magic':'Natural attacks count as magical for purposes of overcoming resistances.',
+  'Mimicry':'Can replicate voices or sounds heard before; Fellowship test to succeed.',
+  'Night Vision':'Sees clearly up to 20 yards in dim light; sees outlines up to 10 yards in total darkness.',
+  'Pack':'Gains +{x} to WS when {x} or more pack members are engaging the same target.',
+  'Painless':'Ignores first Critical effect; never Stunned or knocked Prone from Critical hits.',
+  'Regenerate':'Heals 1 Wound per round while alive; limbs regrow given time.',
+  'Skittering':'+5 Ag; ranged attackers suffer −10; moves through difficult terrain without penalty.',
+  'Skittish':'Must pass a WP test when startled (loud noise, fire, sudden movement) or it will bolt; −10 to Animal Training tests.',
+  'Spiteful':'When knocked out or killed, may immediately make one free attack.',
+  'Stride':'Closing distance counts as a charge; no Move penalty for long distances.',
+  'Stupid':'Must pass a WP test each round or become Stunned and act randomly.',
+  'Sure Footing':'Unaffected by difficult terrain; never required to test Ag for rough ground.',
+  'Swarm':'Occupies multiple squares; damage is split equally among all models in the swarm.',
+  'Territorial':'Attacks creatures that enter its territory; −10 WP when forced to retreat.',
+  'Tracker':'Has the Track skill; can follow scent trails up to 24 hours old; ignores −10 penalties for poor tracking conditions.',
+  'Trained (Combat)':'Trained warbeast; may perform combat manoeuvres and will not flee in battle.',
+  'Trained (Draught)':'Trained to pull carts and loads; no penalty for harness or draught work.',
+  'Trained (Scarred)':'Will not flee from combat; immune to Fear caused by battle.',
+  'Venom':'Wounds impose Venom ({x}) condition; target must pass a T test or suffer D10 Wounds.',
+  'Weapon':'Natural weapon inflicts SB+{x} damage; counts as a hand weapon.',
+  'Web':'Can Restrain a target at range; target needs a Str test at difficulty {x} to break free.',
+};
+const SIZE_MODIFIERS = {
+  'Tiny':'Wounds = SB only. Attackers: −20 to hit; target +20 to Dodge. Enc capacity ×¼.',
+  'Little':'Wounds = SB+TB. Attackers: −10 to hit; target +10 to Dodge. Enc capacity ×½.',
+  'Average':'Wounds = SB+TB+WPB. Standard combat and encumbrance rules.',
+  'Large':'Wounds = SB+2×TB+WPB. Attackers: +10 to hit; target −10 to Dodge. Enc capacity ×2.',
+  'Enormous':'Wounds = SB+3×TB+WPB. Attackers: +20 to hit; target −20 to Dodge. Enc ×4. Counts as Intimidating (2).',
+  'Monstrous':'Wounds = SB+4×TB+WPB. Attackers: +30 to hit; target −30 to Dodge. Enc ×8. Counts as Frightening (2).',
+};
+
+function _getTraitDesc(raw) {
+  const m = raw.trim().match(/^(.*?)\s*\(([^)]*)\)\s*$/);
+  const base = m ? m[1].trim() : raw.trim();
+  const param = m ? m[2].trim() : '';
+  let desc = TRAIT_DESC[base] || '';
+  if (!desc) {
+    for (const [k,v] of Object.entries(TRAIT_DESC)) {
+      if (k.toLowerCase().startsWith(base.toLowerCase())||base.toLowerCase().startsWith(k.toLowerCase())) { desc=v; break; }
+    }
+  }
+  if (!desc) return '';
+  desc = param ? desc.replace(/\{x\}/g, param) : desc.replace(/\s*\(\{x\}\)/g,'').replace(/\{x\}/g,'?');
+  return desc;
+}
+
+async function _buildCompanionPages(pdfDoc, comp) {
+  if (!comp) return;
+  const hasContent = comp.name||comp.role||
+    ((comp.skills||[]).some(s=>(s.name||'').trim()))||
+    ((comp.talents||[]).some(t=>(t.name||'').trim()))||
+    comp.traits||comp.notes;
+  if (!hasContent) return;
+
+  const LM=50,RM=560,CW=510,W=609.6;
+  const BAR_H=14,LBL_H=10,BOX_H=16,GAP=9,ROW_H=15,FIELD_TOTAL=LBL_H+BOX_H;
+  const CY_START=716, CY_MIN=65;
+  const pal = {
+    ink:PDFLib.rgb(0.08,0.06,0.02), hdrBg:PDFLib.rgb(0.13,0.10,0.05),
+    hdrFg:PDFLib.rgb(0.93,0.85,0.55), fieldBg:PDFLib.rgb(0.97,0.94,0.88),
+    border:PDFLib.rgb(0.40,0.27,0.06), gold:PDFLib.rgb(0.72,0.52,0.03),
+    subBg:PDFLib.rgb(0.22,0.17,0.07),
+  };
+
+  const titleStr = comp.name&&comp.role ? `${comp.name} — ${comp.role}`
+    : (comp.name||comp.role||'Companion');
+
+  // Page manager: current page reference + cy
+  let page = pdfDoc.addPage([W, 765.36]);
+  let cy = CY_START;
+
+  function flushPage(continued=true) {
+    page = pdfDoc.addPage([W, 765.36]);
+    cy = CY_START;
+    if (continued) {
+      const hdr=`${titleStr} — continued`;
+      page.drawText(hdr, { x:W/2-hdr.length*4.5, y:cy-18, size:14, color:pal.ink });
+      cy-=28;
+      page.drawLine({ start:{x:LM,y:cy}, end:{x:RM,y:cy}, thickness:1.4, color:pal.border });
+      cy-=12;
+    }
+  }
+  function ensure(h) { if (cy-h < CY_MIN) flushPage(); }
+
+  function hline(y,x1=LM,x2=RM,lw=0.7) {
+    page.drawLine({start:{x:x1,y},end:{x:x2,y},thickness:lw,color:pal.border});
+  }
+  function sectionBar(y,title) {
+    page.drawRectangle({x:LM,y:y-BAR_H,width:CW,height:BAR_H,color:pal.hdrBg});
+    page.drawText(title.toUpperCase(),{x:LM+5,y:y-BAR_H+4,size:8,color:pal.hdrFg});
+    return y-BAR_H;
+  }
+  function labeledField(label,value,x,y,w) {
+    page.drawText(label,{x,y:y-LBL_H+2,size:6.5,color:pal.gold});
+    const bb=y-LBL_H-BOX_H;
+    page.drawRectangle({x,y:bb,width:w,height:BOX_H,color:pal.fieldBg,borderColor:pal.border,borderWidth:0.4});
+    page.drawText(String(value||''),{x:x+4,y:bb+4.5,size:9.5,color:pal.ink});
+  }
+  function statCell(lbl,val,x,y,w) {
+    page.drawText(lbl,{x:x+w/2-lbl.length*2.2,y:y-LBL_H+2,size:6.5,color:pal.gold});
+    const bb=y-LBL_H-BOX_H;
+    page.drawRectangle({x,y:bb,width:w,height:BOX_H,color:pal.fieldBg,borderColor:pal.border,borderWidth:0.4});
+    const vs=String(val||'');
+    page.drawText(vs,{x:x+w/2-vs.length*3,y:bb+4.5,size:9.5,color:pal.ink});
+  }
+  function subHeader(cols, y) {
+    // cols: [{label, x, w}]
+    for(const col of cols){
+      page.drawRectangle({x:col.x,y:y-12,width:col.w,height:12,color:pal.subBg});
+      page.drawText(col.label,{x:col.x+col.w/2-col.label.length*2.5,y:y-9,size:7.5,color:pal.hdrFg});
+    }
+  }
+
+  // ── Title
+  page.drawText(titleStr,{x:W/2-titleStr.length*5.5,y:cy-22,size:22,color:pal.ink});
+  cy-=32; hline(cy,LM,RM,1.4); cy-=12;
+
+  // ── Identity
+  ensure(BAR_H+7+FIELD_TOTAL+GAP+4);
+  cy=sectionBar(cy,'Identity'); cy-=7;
+  const fw=CW/4-4;
+  labeledField('Name',comp.name||'',LM,cy,fw);
+  labeledField('Category',comp.category||'',LM+fw+4,cy,fw);
+  labeledField('Species/Role',comp.role||'',LM+2*(fw+4),cy,fw);
+  labeledField('Loyalty',comp.loyalty||'',LM+3*(fw+4),cy,fw);
+  cy-=FIELD_TOTAL+GAP+4; hline(cy); cy-=GAP;
+
+  // ── Characteristics
+  ensure(BAR_H+7+FIELD_TOTAL+8+FIELD_TOTAL+4+10+GAP*2);
+  cy=sectionBar(cy,'Characteristics'); cy-=7;
+  const cStats=[['M','m'],['WS','ws'],['BS','bs'],['S','s'],['T','t'],['I','i'],
+                ['Ag','ag'],['Dex','dex'],['Int','int'],['WP','wp'],['Fel','fel']];
+  const cellW=CW/cStats.length;
+  cStats.forEach(([lbl,key],i)=>statCell(lbl,comp[key]||'',LM+i*cellW,cy,cellW-1.5));
+  cy-=FIELD_TOTAL+8;
+  labeledField('Size',comp.size||'',LM,cy,88);
+  labeledField('Wounds (Max)',comp.wmax||'',LM+96,cy,88);
+  labeledField('Wounds (Cur.)',comp.wcur||'',LM+192,cy,88);
+  labeledField('Armour Points',String(comp.ap||'0'),LM+288,cy,80);
+  cy-=FIELD_TOTAL+4;
+  const sizeNote=SIZE_MODIFIERS[comp.size||'']||'';
+  if(sizeNote){ page.drawText(`Size (${comp.size}): ${sizeNote}`,{x:LM,y:cy-8,size:7,color:pal.gold}); cy-=10; }
+  cy-=GAP; hline(cy); cy-=GAP;
+
+  // ── Skills
+  const skills=(comp.skills||[]).filter(s=>(s.name||'').trim());
+  if(skills.length){
+    const cSkName=CW-70, cSkVal=68;
+    const drawSkHeader=()=>{
+      subHeader([{label:'SKILL',x:LM,w:cSkName},{label:'VALUE',x:LM+cSkName+2,w:cSkVal}],cy);
+      cy-=12;
+    };
+    ensure(BAR_H+4+12+ROW_H);
+    cy=sectionBar(cy,'Skills'); cy-=4; drawSkHeader();
+    for(const sk of skills){
+      if(cy-ROW_H<CY_MIN){ flushPage(); cy=sectionBar(cy,'Skills (continued)'); cy-=4; drawSkHeader(); }
+      page.drawRectangle({x:LM,y:cy-ROW_H,width:cSkName,height:ROW_H,color:pal.fieldBg,borderColor:pal.border,borderWidth:0.35});
+      page.drawRectangle({x:LM+cSkName+2,y:cy-ROW_H,width:cSkVal,height:ROW_H,color:pal.fieldBg,borderColor:pal.border,borderWidth:0.35});
+      page.drawText(sk.name||'',{x:LM+6,y:cy-ROW_H+4.5,size:9,color:pal.ink});
+      const sv=String(sk.value||'');
+      page.drawText(sv,{x:LM+cSkName+2+cSkVal/2-sv.length*3,y:cy-ROW_H+4.5,size:9,color:pal.ink});
+      cy-=ROW_H;
+    }
+    cy-=GAP; hline(cy); cy-=GAP;
+  }
+
+  // ── Talents
+  const talents=(comp.talents||[]).filter(t=>(t.name||'').trim());
+  if(talents.length){
+    const cTn=130, cTi=42, cTd=CW-130-42-4;
+    const drawTalHeader=()=>{
+      subHeader([{label:'TALENT',x:LM,w:cTn},{label:'TIMES',x:LM+cTn+2,w:cTi},{label:'DESCRIPTION / EFFECT',x:LM+cTn+cTi+4,w:cTd}],cy);
+      cy-=12;
+    };
+    ensure(BAR_H+4+12+ROW_H);
+    cy=sectionBar(cy,'Talents'); cy-=4; drawTalHeader();
+    for(const tal of talents){
+      const descLines=_wrapToLines(tal.desc||'',Math.floor(cTd/6));
+      const rowH=Math.max(ROW_H,descLines.length*10+5);
+      if(cy-rowH<CY_MIN){ flushPage(); cy=sectionBar(cy,'Talents (continued)'); cy-=4; drawTalHeader(); }
+      page.drawRectangle({x:LM,y:cy-rowH,width:cTn,height:rowH,color:pal.fieldBg,borderColor:pal.border,borderWidth:0.35});
+      page.drawRectangle({x:LM+cTn+2,y:cy-rowH,width:cTi,height:rowH,color:pal.fieldBg,borderColor:pal.border,borderWidth:0.35});
+      page.drawRectangle({x:LM+cTn+cTi+4,y:cy-rowH,width:cTd,height:rowH,color:pal.fieldBg,borderColor:pal.border,borderWidth:0.35});
+      page.drawText(tal.name||'',{x:LM+6,y:cy-rowH/2-4,size:9,color:pal.ink});
+      const tv=String(tal.times||'1');
+      page.drawText(tv,{x:LM+cTn+2+cTi/2-tv.length*3,y:cy-rowH/2-4,size:9,color:pal.ink});
+      let ly=cy-10;
+      for(const ln of descLines){ page.drawText(ln,{x:LM+cTn+cTi+8,y:ly,size:8.5,color:pal.ink}); ly-=10; }
+      cy-=rowH;
+    }
+    cy-=GAP; hline(cy); cy-=GAP;
+  }
+
+  // ── Traits
+  const traitsRaw=(comp.traits||'').trim();
+  if(traitsRaw){
+    const rawTraits=traitsRaw.split(/,\s*(?![^(]*\))/).map(s=>s.trim()).filter(Boolean);
+    const cTrName=140, cTrDesc=CW-140-2;
+    const drawTraitHeader=()=>{
+      subHeader([{label:'TRAIT',x:LM,w:cTrName},{label:'EFFECT',x:LM+cTrName+2,w:cTrDesc}],cy);
+      cy-=12;
+    };
+    ensure(BAR_H+4+12+ROW_H);
+    cy=sectionBar(cy,'Traits'); cy-=4; drawTraitHeader();
+    for(const raw of rawTraits){
+      const desc=_getTraitDesc(raw);
+      const descLines=desc?_wrapToLines(desc,Math.floor(cTrDesc/5.5)):[];
+      const rowH=Math.max(ROW_H,descLines.length*9+5);
+      if(cy-rowH<CY_MIN){ flushPage(); cy=sectionBar(cy,'Traits (continued)'); cy-=4; drawTraitHeader(); }
+      page.drawRectangle({x:LM,y:cy-rowH,width:cTrName,height:rowH,color:pal.fieldBg,borderColor:pal.border,borderWidth:0.35});
+      page.drawRectangle({x:LM+cTrName+2,y:cy-rowH,width:cTrDesc,height:rowH,color:pal.fieldBg,borderColor:pal.border,borderWidth:0.35});
+      page.drawText(raw,{x:LM+5,y:cy-rowH/2-4,size:8.8,color:pal.ink});
+      let ly=cy-9;
+      for(const ln of descLines){ page.drawText(ln,{x:LM+cTrName+6,y:ly,size:8.2,color:pal.ink}); ly-=9; }
+      cy-=rowH;
+    }
+    cy-=GAP; hline(cy); cy-=GAP;
+  }
+
+  // ── Equipment
+  const equipment=(comp.equipment||[]).filter(e=>(e.name||'').trim());
+  if(equipment.length){
+    const cEq=CW-60, cEnc=58;
+    const drawEqHeader=()=>{
+      subHeader([{label:'ITEM',x:LM,w:cEq},{label:'ENC',x:LM+cEq+2,w:cEnc}],cy);
+      cy-=12;
+    };
+    ensure(BAR_H+4+12+ROW_H);
+    cy=sectionBar(cy,'Equipment'); cy-=4; drawEqHeader();
+    for(const eq of equipment){
+      if(cy-ROW_H<CY_MIN){ flushPage(); cy=sectionBar(cy,'Equipment (continued)'); cy-=4; drawEqHeader(); }
+      page.drawRectangle({x:LM,y:cy-ROW_H,width:cEq,height:ROW_H,color:pal.fieldBg,borderColor:pal.border,borderWidth:0.35});
+      page.drawRectangle({x:LM+cEq+2,y:cy-ROW_H,width:cEnc,height:ROW_H,color:pal.fieldBg,borderColor:pal.border,borderWidth:0.35});
+      page.drawText(eq.name||'',{x:LM+6,y:cy-ROW_H+4.5,size:9,color:pal.ink});
+      const ev=String(eq.enc||'');
+      if(ev) page.drawText(ev,{x:LM+cEq+2+cEnc/2-ev.length*3,y:cy-ROW_H+4.5,size:9,color:pal.ink});
+      cy-=ROW_H;
+    }
+    cy-=GAP; hline(cy); cy-=GAP;
+  }
+
+  // ── Notes
+  const notesText=(comp.notes||'').trim();
+  if(notesText){
+    const noteLines=_wrapToLines(notesText,80); const lineH=12;
+    ensure(BAR_H+4+lineH);
+    cy=sectionBar(cy,'Notes'); cy-=4;
+    let i=0;
+    while(i<noteLines.length){
+      const fit=Math.max(1,Math.floor((cy-CY_MIN)/lineH));
+      const chunk=noteLines.slice(i,i+fit);
+      const chunkH=chunk.length*lineH;
+      page.drawRectangle({x:LM,y:cy-chunkH,width:CW,height:chunkH,color:pal.fieldBg,borderColor:pal.border,borderWidth:0.4});
+      let ly=cy-10;
+      for(const ln of chunk){ page.drawText(ln,{x:LM+5,y:ly,size:9.5,color:pal.ink}); ly-=lineH; }
+      cy-=chunkH; i+=chunk.length;
+      if(i<noteLines.length){ flushPage(); cy=sectionBar(cy,'Notes (continued)'); cy-=4; }
+    }
+  }
+}
+
 function _buildFieldValues(d) {
   const fv = {};
   const set = (name, val) => { fv[name] = val != null ? String(val) : ''; };
@@ -4166,13 +4643,37 @@ async function exportPDF() {
       const allTrappings = [...(d.trappings||[]), ...(d.weapons||[]), ...(d.armour||[])];
       let allMounts = d.mounts||[];
       if (!allMounts.length && d.mount) allMounts = [d.mount];
-      if (allMounts.some(m=>m&&(m.type||m.customName||m.traits||m.notes||m.equipment))) {
-        const mountDoc = await PDFDocument.create();
-        for (const m of allMounts) {
-          if (!m) continue;
-          await _buildMountPage(mountDoc, m, allTrappings);
-        }
-        if (mountDoc.getPageCount() > 0) extraParts.push(await mountDoc.save());
+      for (const m of allMounts) {
+        if (!m) continue;
+        const packedNames = new Set(m.packedTrapNames||[]);
+        const perMountTraps = allTrappings.map(t =>
+          packedNames.size ? {...t, packed: packedNames.has((t.name||'').trim())} : {...t, packed:false}
+        );
+        const mDoc = await PDFDocument.create();
+        await _buildMountPage(mDoc, m, perMountTraps);
+        if (mDoc.getPageCount() > 0) extraParts.push(await mDoc.save());
+      }
+
+      // ── Vehicle pages ─────────────────────────────────────────────────────
+      const allVehicles = d.vehicles||[];
+      for (const v of allVehicles) {
+        if (!v) continue;
+        const stowedNames = new Set(v.stowedTrapNames||[]);
+        const perVehTraps = allTrappings.map(t =>
+          stowedNames.size ? {...t, stowed: stowedNames.has((t.name||'').trim())} : {...t, stowed:false}
+        );
+        const vDoc = await PDFDocument.create();
+        await _buildVehiclePage(vDoc, v, perVehTraps);
+        if (vDoc.getPageCount() > 0) extraParts.push(await vDoc.save());
+      }
+
+      // ── Companion pages ───────────────────────────────────────────────────
+      const allCompanions = d.companions||[];
+      for (const comp of allCompanions) {
+        if (!comp) continue;
+        const cDoc = await PDFDocument.create();
+        await _buildCompanionPages(cDoc, comp);
+        if (cDoc.getPageCount() > 0) extraParts.push(await cDoc.save());
       }
 
       // ── Merge everything together ─────────────────────────────────────────
