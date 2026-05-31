@@ -3614,6 +3614,295 @@ function _abbrGroup(g) {
   return m ? m[1] : String(g || '').trim();
 }
 
+// ── Extra page helpers ────────────────────────────────────────────────────────
+
+function _countArmRows(namedArmour) {
+  return namedArmour.reduce((s,a) => s + _wrapToLines(a.qualities||'', 26).length, 0);
+}
+function _countSpellRows(namedSpells) {
+  return namedSpells.reduce((s,sp) => s + Math.max(1, _wrapToLines(sp.effect||'', 44).length), 0);
+}
+
+async function _fillArmorPage(d) {
+  const { PDFDocument } = PDFLib;
+  const bytes = await fetch(new URL('armorpage_fillable.pdf', window.location.href).href).then(r=>r.arrayBuffer());
+  const pdf = await PDFDocument.load(bytes, { ignoreEncryption: true });
+  const form = pdf.getForm();
+  const sf = (n,v) => { try { form.getTextField(n).setText(String(v||'')); } catch(e){} };
+
+  // Armour rows (up to 24)
+  const armour = (d.armour||[]).filter(a=>(a.name||'').trim());
+  let row = 1;
+  for (const piece of armour) {
+    if (row > 24) break;
+    const qlines = _wrapToLines(piece.qualities||'', 26);
+    sf(`arm_name_${row}`, piece.name||''); sf(`arm_loc_${row}`, piece.loc||'');
+    sf(`arm_enc_${row}`, piece.enc||''); sf(`arm_ap_${row}`, piece.ap||'');
+    sf(`arm_qualities_${row}`, qlines[0]); row++;
+    for (const extra of qlines.slice(1)) {
+      if (row > 24) break;
+      sf(`arm_name_${row}`,''); sf(`arm_loc_${row}`,''); sf(`arm_enc_${row}`,'');
+      sf(`arm_ap_${row}`,''); sf(`arm_qualities_${row}`, extra); row++;
+    }
+  }
+  for (let r = row; r <= 24; r++) {
+    sf(`arm_name_${r}`,''); sf(`arm_loc_${r}`,''); sf(`arm_enc_${r}`,''); sf(`arm_ap_${r}`,''); sf(`arm_qualities_${r}`,'');
+  }
+
+  // AP boxes
+  sf('ap_head', d.apHead||'0'); sf('ap_left_arm', d.apRarm||'0'); sf('ap_right_arm', d.apLarm||'0');
+  sf('ap_body', d.apBody||'0'); sf('ap_right_leg', d.apRleg||'0'); sf('ap_left_leg', d.apLleg||'0');
+  sf('ap_shield', d.apShield||'0');
+
+  // Wounds
+  sf('wounds_sb', d.wSb||'0'); sf('wounds_tb2', d.wTb2||'0'); sf('wounds_wpb', d.wWpb||'0');
+  sf('wounds_hardy', d.wHardy||'0'); sf('wounds_max', d.wMax||'0');
+
+  // Weapons
+  const sChar = (d.chars||{}).s||{}; let strCur=0;
+  try { strCur = parseInt(sChar.i||0)+parseInt(sChar.a||0); } catch(e){}
+  for (let i=0; i<7; i++) {
+    const r=i+1; const w=(d.weapons||[])[i]||{};
+    sf(`wpn_name_${r}`,w.name||''); sf(`wpn_group_${r}`,_abbrGroup(w.group||''));
+    sf(`wpn_enc_${r}`,w.enc||''); sf(`wpn_range_${r}`,w.range||'');
+    sf(`wpn_damage_${r}`,_resolveWeaponDamage(w.damage||'',strCur)); sf(`wpn_qualities_${r}`,w.qualities||'');
+  }
+  form.flatten();
+  return pdf.save();
+}
+
+async function _fillTalentPage(d, fillTalents, fillTrappings) {
+  const { PDFDocument } = PDFLib;
+  const bytes = await fetch(new URL('talentextra_fillable.pdf', window.location.href).href).then(r=>r.arrayBuffer());
+  const pdf = await PDFDocument.load(bytes, { ignoreEncryption: true });
+  const form = pdf.getForm();
+  const sf = (n,v) => { try { form.getTextField(n).setText(String(v||'')); } catch(e){} };
+
+  const talents = (d.talents||[]).filter(t=>(t.name||'').trim());
+  for (let i=0; i<22; i++) {
+    const r=i+1; const t=(fillTalents && i<talents.length) ? talents[i] : {};
+    sf(`tal_name_${r}`,t.name||''); sf(`tal_times_${r}`,t.times||''); sf(`tal_desc_${r}`,t.desc||'');
+  }
+
+  const traps = (d.trappings||[]).filter(t=>(t.name||'').trim());
+  for (let ci=0; ci<3; ci++) {
+    for (let ri=0; ri<15; ri++) {
+      const idx = ci*15+ri; const item=(fillTrappings && idx<traps.length) ? traps[idx] : {};
+      let name=item.name||'', enc=item.enc||'';
+      if (item.stowed) { name='🛒 '+name; enc=''; }
+      else if (item.packed) { name='🐴 '+name; enc=''; }
+      sf(`trap${ci+1}_name_${ri+1}`, name); sf(`trap${ci+1}_enc_${ri+1}`, enc);
+    }
+  }
+  form.flatten();
+  return pdf.save();
+}
+
+async function _fillSpellPage(d) {
+  const { PDFDocument } = PDFLib;
+  const bytes = await fetch(new URL('extraspells_fillable.pdf', window.location.href).href).then(r=>r.arrayBuffer());
+  const pdf = await PDFDocument.load(bytes, { ignoreEncryption: true });
+  const form = pdf.getForm();
+  const sf = (n,v) => { try { form.getTextField(n).setText(String(v||'')); } catch(e){} };
+
+  const MAX=36;
+  for (let r=1; r<=MAX; r++) {
+    sf(`sp_name_${r}`,''); sf(`sp_tn_${r}`,''); sf(`sp_range_${r}`,'');
+    sf(`sp_target_${r}`,''); sf(`sp_duration_${r}`,''); sf(`sp_effect_${r}`,'');
+  }
+  sf('notes','');
+
+  const spells = (d.spells||[]).filter(s=>(s.name||'').trim());
+  let ri=0;
+  for (const sp of spells) {
+    if (ri>=MAX) break;
+    const elines = _wrapToLines(sp.effect||'', 60);
+    sf(`sp_name_${ri+1}`,sp.name||''); sf(`sp_tn_${ri+1}`,sp.tn||'');
+    sf(`sp_range_${ri+1}`,sp.range||''); sf(`sp_target_${ri+1}`,sp.target||'');
+    sf(`sp_duration_${ri+1}`,sp.duration||''); sf(`sp_effect_${ri+1}`,elines[0]); ri++;
+    for (const extra of elines.slice(1)) {
+      if (ri>=MAX) break;
+      sf(`sp_effect_${ri+1}`,extra); ri++;
+    }
+  }
+  form.flatten();
+  return pdf.save();
+}
+
+// ── Mount / Vehicle drawn pages (pdf-lib canvas drawing) ─────────────────────
+
+function _makePdfPage(pdfDoc) {
+  // A4-ish WFRP page: 609.6 × 765.36 pts (matches Python fill_mount_page)
+  const W=609.6, H=765.36;
+  const page = pdfDoc.addPage([W, H]);
+  // Palette (same colours as Python)
+  const c = {
+    ink:    PDFLib.rgb(0.08,0.06,0.02),
+    hdrBg:  PDFLib.rgb(0.13,0.10,0.05),
+    hdrFg:  PDFLib.rgb(0.93,0.85,0.55),
+    fieldBg:PDFLib.rgb(0.97,0.94,0.88),
+    border: PDFLib.rgb(0.40,0.27,0.06),
+    gold:   PDFLib.rgb(0.72,0.52,0.03),
+    divider:PDFLib.rgb(0.55,0.38,0.08),
+    subBg:  PDFLib.rgb(0.22,0.17,0.07),
+  };
+  const LM=50, RM=560, CW=510;
+  const BAR_H=14, LBL_H=10, BOX_H=16, GAP=9, ROW_H=15;
+  const FIELD_TOTAL = LBL_H+BOX_H;
+
+  function hline(cy, x1=LM, x2=RM, lw=0.7) {
+    page.drawLine({ start:{x:x1,y:cy}, end:{x:x2,y:cy}, thickness:lw, color:c.divider });
+  }
+  function sectionBar(cy, title) {
+    page.drawRectangle({ x:LM, y:cy-BAR_H, width:CW, height:BAR_H, color:c.hdrBg });
+    page.drawText(title.toUpperCase(), { x:LM+5, y:cy-BAR_H+4, size:8, color:c.hdrFg });
+    return cy-BAR_H;
+  }
+  function labeledField(label, value, x, cy, w) {
+    page.drawText(label, { x, y:cy-LBL_H+2, size:6.5, color:c.gold });
+    const boxBot = cy-LBL_H-BOX_H;
+    page.drawRectangle({ x, y:boxBot, width:w, height:BOX_H, color:c.fieldBg,
+      borderColor:c.border, borderWidth:0.4 });
+    page.drawText(String(value||''), { x:x+4, y:boxBot+4.5, size:9.5, color:c.ink });
+  }
+  function statCell(label, value, x, cy, w) {
+    const cx=x+w/2;
+    page.drawText(label, { x:cx-label.length*2.2, y:cy-LBL_H+2, size:6.5, color:c.gold });
+    const boxBot = cy-LBL_H-BOX_H;
+    page.drawRectangle({ x, y:boxBot, width:w, height:BOX_H, color:c.fieldBg,
+      borderColor:c.border, borderWidth:0.4 });
+    const vs=String(value||'');
+    page.drawText(vs, { x:cx-vs.length*3, y:boxBot+4.5, size:10, color:c.ink });
+  }
+
+  return { page, c, LM, RM, CW, BAR_H, LBL_H, BOX_H, GAP, ROW_H, FIELD_TOTAL,
+           hline, sectionBar, labeledField, statCell };
+}
+
+async function _buildMountPage(pdfDoc, mountData, allTrappings) {
+  if (!mountData) return;
+  const has = mountData.type||mountData.customName||mountData.equipment||mountData.traits||mountData.notes;
+  if (!has) return;
+
+  const { page, c, LM, RM, CW, BAR_H, LBL_H, BOX_H, GAP, ROW_H, FIELD_TOTAL,
+          hline, sectionBar, labeledField, statCell } = _makePdfPage(pdfDoc);
+
+  const packedNames = new Set(mountData.packedTrapNames||[]);
+  const packed = (allTrappings||[]).filter(t => packedNames.has((t.name||'').trim()) && (t.name||'').trim());
+  const equipment = (mountData.equipment||[]).filter(e=>(e.name||'').trim());
+
+  const AP_DB = {'barding, full plate':5,'barding, heavy mail':3,'barding, light leather':1};
+  const apTotal = equipment.reduce((s,e)=>s+(AP_DB[(e.name||'').toLowerCase().trim()]||0),0);
+  const encEquip = equipment.reduce((s,e)=>s+parseFloat(e.enc||0),0);
+  const encPacked = packed.reduce((s,t)=>s+parseFloat(t.enc||0),0);
+
+  let cy=716;
+
+  // Title
+  page.drawText('MOUNT', { x:CW/2+LM-30, y:cy-22, size:22, color:c.ink }); cy-=32;
+  hline(cy, LM, RM, 1.4); cy-=12;
+
+  // Identity
+  cy=sectionBar(cy,'Identity'); cy-=7;
+  const half=CW/2-4;
+  labeledField('Mount Type', mountData.type||'', LM, cy, half);
+  labeledField('Custom Name', mountData.customName||'', LM+half+8, cy, half);
+  cy-=FIELD_TOTAL+GAP+4; hline(cy); cy-=GAP;
+
+  // Characteristics
+  cy=sectionBar(cy,'Characteristics'); cy-=7;
+  const stats=[['M','m'],['WS','ws'],['BS','bs'],['S','s'],['T','t'],['I','i'],
+               ['Ag','ag'],['Dex','dex'],['Int','int'],['WP','wp'],['Fel','fel']];
+  const cellW=CW/stats.length;
+  stats.forEach(([lbl,key],i) => statCell(lbl, mountData[key]||'', LM+i*cellW, cy, cellW-1.5));
+  cy-=FIELD_TOTAL+8;
+
+  labeledField('Size', mountData.size||'', LM, cy, 88);
+  labeledField('Wounds (Max)', mountData.wmax||'', LM+96, cy, 88);
+  labeledField('Wounds (Cur.)', mountData.wcur||'', LM+192, cy, 88);
+  labeledField('Advantage', mountData.adv||'', LM+288, cy, 62);
+  labeledField('AP (Barding)', String(apTotal||0), LM+358, cy, 62);
+  cy-=FIELD_TOTAL+GAP+4; hline(cy); cy-=GAP;
+
+  // Traits & Skills (simple text blocks)
+  cy=sectionBar(cy,'Traits & Skills'); cy-=7;
+  const colW=CW/2-4;
+  function textBlock(label, text, x, topCy, w) {
+    const lines=(text||'').replace(/;/g,',').split(',').map(s=>s.trim()).filter(Boolean);
+    const lblSp=11, boxH=Math.max(40,Math.min(70,lines.length*13+12));
+    page.drawText(label.toUpperCase(), { x, y:topCy-lblSp+2, size:7, color:c.gold });
+    const boxBot=topCy-lblSp-boxH;
+    page.drawRectangle({ x, y:boxBot, width:w, height:boxH, color:c.fieldBg, borderColor:c.border, borderWidth:0.4 });
+    let ly=boxBot+boxH-13;
+    for (const ln of lines) {
+      if (ly<boxBot+4) break;
+      page.drawText(ln, { x:x+4, y:ly, size:9, color:c.ink }); ly-=13;
+    }
+    return lblSp+boxH;
+  }
+  const th=textBlock('Traits', mountData.traits||'', LM, cy, colW);
+  const sh=textBlock('Skills', mountData.skills||'', LM+colW+8, cy, colW);
+  cy-=Math.max(th,sh)+GAP+4; hline(cy); cy-=GAP;
+
+  // Equipment
+  cy=sectionBar(cy,'Equipment & Barding');
+  const nameW=CW-64-4;
+  cy-=2;
+  page.drawRectangle({ x:LM, y:cy-13, width:nameW, height:13, color:c.subBg });
+  page.drawRectangle({ x:LM+nameW+4, y:cy-13, width:64, height:13, color:c.subBg });
+  page.drawText('ITEM', { x:LM+4, y:cy-10, size:8, color:c.hdrFg });
+  page.drawText('ENC', { x:LM+nameW+4+16, y:cy-10, size:8, color:c.hdrFg });
+  cy-=13;
+  for (const item of equipment) {
+    page.drawRectangle({ x:LM, y:cy-ROW_H, width:nameW, height:ROW_H, color:c.fieldBg, borderColor:c.border, borderWidth:0.35 });
+    page.drawRectangle({ x:LM+nameW+4, y:cy-ROW_H, width:64, height:ROW_H, color:c.fieldBg, borderColor:c.border, borderWidth:0.35 });
+    page.drawText(item.name||'', { x:LM+4, y:cy-ROW_H+4.5, size:9, color:c.ink });
+    if (item.enc!=null&&item.enc!=='') page.drawText(String(item.enc), { x:LM+nameW+4+16, y:cy-ROW_H+4.5, size:9, color:c.ink });
+    cy-=ROW_H;
+  }
+  if (packed.length) {
+    cy-=2;
+    page.drawRectangle({ x:LM, y:cy-13, width:nameW+68, height:13, color:c.subBg });
+    page.drawText('PACKED TRAPPINGS (PLAYER ITEMS)', { x:LM+4, y:cy-10, size:7, color:c.gold }); cy-=13;
+    for (const t of packed) {
+      page.drawRectangle({ x:LM, y:cy-ROW_H, width:nameW, height:ROW_H, color:c.fieldBg, borderColor:c.border, borderWidth:0.35 });
+      page.drawRectangle({ x:LM+nameW+4, y:cy-ROW_H, width:64, height:ROW_H, color:c.fieldBg, borderColor:c.border, borderWidth:0.35 });
+      page.drawCircle({ x:LM+7, y:cy-ROW_H+ROW_H/2, size:3, color:c.gold });
+      page.drawText(t.name||'', { x:LM+14, y:cy-ROW_H+4.5, size:9, color:c.ink });
+      if (t.enc!=null&&t.enc!=='') page.drawText(String(t.enc), { x:LM+nameW+4+16, y:cy-ROW_H+4.5, size:9, color:c.ink });
+      cy-=ROW_H;
+    }
+  }
+  cy-=GAP; hline(cy); cy-=GAP;
+
+  // Encumbrance
+  cy=sectionBar(cy,'Encumbrance'); cy-=7;
+  const fw2=CW/2-6;
+  labeledField('Equipment Enc.', String(encEquip||0), LM, cy, fw2);
+  labeledField('Packed Trappings', packed.length?String(encPacked):'—', LM+CW/2+6, cy, fw2);
+  cy-=FIELD_TOTAL+GAP;
+  let sb=0; try{ sb=Math.floor(parseInt(mountData.s||0)/10); }catch(e){}
+  const encMax=sb*10, encTotal=encEquip+encPacked;
+  labeledField('Total Enc.', String(encTotal), LM, cy, fw2);
+  labeledField('Max Enc. (SB×10)', String(encMax), LM+CW/2+6, cy, fw2);
+  cy-=FIELD_TOTAL+GAP;
+  labeledField('Remaining', String(encMax-encTotal), LM, cy, fw2);
+  cy-=FIELD_TOTAL+GAP+4; hline(cy); cy-=GAP;
+
+  // Notes
+  cy=sectionBar(cy,'Notes'); cy-=5;
+  const notesH=Math.max(50,cy-46);
+  page.drawRectangle({ x:LM, y:cy-notesH, width:CW, height:notesH, color:c.fieldBg, borderColor:c.border, borderWidth:0.4 });
+  if (mountData.notes) {
+    const nlines=_wrapToLines(mountData.notes, 80);
+    let ny=cy-13;
+    for (const nl of nlines) {
+      if (ny<cy-notesH+4) break;
+      page.drawText(nl, { x:LM+5, y:ny, size:9.5, color:c.ink }); ny-=13;
+    }
+  }
+}
+
 function _buildFieldValues(d) {
   const fv = {};
   const set = (name, val) => { fv[name] = val != null ? String(val) : ''; };
@@ -3836,20 +4125,72 @@ async function exportPDF() {
     } else {
       // Web: fill the PDF client-side using pdf-lib
       const { PDFDocument } = PDFLib;
+
+      // ── Overflow detection (mirrors Python fill_pdf) ──────────────────────
+      const namedArmour   = (d.armour||[]).filter(a=>(a.name||'').trim());
+      const namedTalents  = (d.talents||[]).filter(t=>(t.name||'').trim());
+      const namedTraps    = (d.trappings||[]).filter(t=>(t.name||'').trim());
+      const namedSpells   = (d.spells||[]).filter(s=>(s.name||'').trim());
+      const useArmorPage      = _countArmRows(namedArmour) > 5;
+      const overflowTalents   = namedTalents.length > 4;
+      const overflowTrappings = namedTraps.length > 10;
+      const useTalentPage     = overflowTalents || overflowTrappings;
+      const overflowSpells    = _countSpellRows(namedSpells) > 8;
+
+      // ── Fill main 2-page sheet ────────────────────────────────────────────
       const templateUrl = new URL('WFRP4_Fillable_Character_Sheet_Autofill.pdf', window.location.href).href;
       const pdfBytes = await fetch(templateUrl).then(r => r.arrayBuffer());
-      const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
-      const form = pdfDoc.getForm();
+      const mainDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
+      const form = mainDoc.getForm();
       const fieldValues = _buildFieldValues(d);
+
+      // Redirect fields on main sheet if extra pages will be appended
+      if (useArmorPage)      fieldValues['NameRow1_2'] = 'See Armour page';
+      if (overflowTalents)   { fieldValues['Talent NameRow1']='See Talents document'; fieldValues['Times takenRow1']=''; fieldValues['DescriptionRow1']=''; }
+      if (overflowTrappings) { fieldValues['NameRow1_3']='See Trappings document'; fieldValues['EncRow1_2']=''; }
+      if (overflowSpells)    fieldValues['NameRow1_5'] = 'See extra Spells and Prayers page';
+
       for (const [name, value] of Object.entries(fieldValues)) {
-        try {
-          const field = form.getTextField(name);
-          field.setText(value);
-        } catch(e) { /* field may not exist on this template — skip */ }
+        try { form.getTextField(name).setText(value); } catch(e) {}
       }
       form.flatten();
-      const filledBytes = await pdfDoc.save();
-      const blob = new Blob([filledBytes], { type: 'application/pdf' });
+      const mainBytes = await mainDoc.save();
+
+      // ── Build extra pages ─────────────────────────────────────────────────
+      const extraParts = [];
+      if (useArmorPage)  extraParts.push(await _fillArmorPage(d));
+      if (useTalentPage) extraParts.push(await _fillTalentPage(d, overflowTalents, overflowTrappings));
+      if (overflowSpells) extraParts.push(await _fillSpellPage(d));
+
+      // ── Mount pages ───────────────────────────────────────────────────────
+      const allTrappings = [...(d.trappings||[]), ...(d.weapons||[]), ...(d.armour||[])];
+      let allMounts = d.mounts||[];
+      if (!allMounts.length && d.mount) allMounts = [d.mount];
+      if (allMounts.some(m=>m&&(m.type||m.customName||m.traits||m.notes||m.equipment))) {
+        const mountDoc = await PDFDocument.create();
+        for (const m of allMounts) {
+          if (!m) continue;
+          await _buildMountPage(mountDoc, m, allTrappings);
+        }
+        if (mountDoc.getPageCount() > 0) extraParts.push(await mountDoc.save());
+      }
+
+      // ── Merge everything together ─────────────────────────────────────────
+      let finalBytes = mainBytes;
+      if (extraParts.length) {
+        const merged = await PDFDocument.create();
+        const mainCopy = await PDFDocument.load(mainBytes);
+        const mainPages = await merged.copyPages(mainCopy, mainCopy.getPageIndices());
+        mainPages.forEach(p => merged.addPage(p));
+        for (const part of extraParts) {
+          const partDoc = await PDFDocument.load(part);
+          const partPages = await merged.copyPages(partDoc, partDoc.getPageIndices());
+          partPages.forEach(p => merged.addPage(p));
+        }
+        finalBytes = await merged.save();
+      }
+
+      const blob = new Blob([finalBytes], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
